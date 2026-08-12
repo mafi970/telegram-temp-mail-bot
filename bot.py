@@ -137,7 +137,7 @@ async def process_single_inbox_check(context, target_email):
         full_response_text = f"📬 **ইনবক্স:** `{target_email}`\n━━━━━━━━━━━━━━━━━━━\n"
         for idx, mail in enumerate(emails, 1):
             sender = mail.get("from", "অজানা")
-                subject = mail.get("subject", "বিষয় ছাড়া")
+            subject = mail.get("subject", "বিষয় ছাড়া")
             body = mail.get("textBody", "")
 
             extracted_code = extract_smart_otp(subject, body)
