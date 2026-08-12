@@ -33,7 +33,7 @@ http_session: aiohttp.ClientSession = None
 def get_reply_keyboard():
     keyboard = [
         [KeyboardButton("🌐 ডোমেইন সিলেক্ট করুন")],
-        [KeyboardButton("✉️ ১টি ইমেইল"), KeyboardButton("📦 ৫টি ইমেইল")],
+        [KeyboardButton("✉️ ১টি ইমেইল"), KeyboardButton("📦 ২টি ইমেইল")],
         [KeyboardButton("📋 আমার ইমেইলসমূহ")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -89,13 +89,11 @@ async def fetch_new_email(target_domain=None, max_attempts=6):
     if not target_domain or target_domain == "any":
         return await fetch_single_api_email()
 
-    # Retry efficiently
     for _ in range(max_attempts):
         res = await fetch_single_api_email()
         if res and res["email"].endswith(f"@{target_domain}"):
             return res
 
-    # Fallback if specific domain isn't acquired quickly
     return await fetch_single_api_email()
 
 
@@ -118,7 +116,6 @@ async def process_inbox_check(context):
     if not email_list:
         return "📂 প্রথমে একটি ইমেইল জেনারেট করুন।"
 
-    # Fast parallel execution for all user emails
     tasks = [fetch_inbox(item["email"], item["auth_key"]) for item in email_list]
     inbox_results = await asyncio.gather(*tasks)
 
@@ -231,9 +228,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ সার্ভার ব্যস্ত আছে। অনুগ্রহ করে কয়েক সেকেন্ড পর আবার চেষ্টা করুন।")
 
-    elif text == "📦 ৫টি ইমেইল":
-        # Run 5 requests concurrently in parallel for extreme speed
-        tasks = [fetch_new_email(target_domain=selected_domain) for _ in range(5)]
+    elif text == "📦 ২টি ইমেইল":
+        # Run 2 requests concurrently for extreme speed
+        tasks = [fetch_new_email(target_domain=selected_domain) for _ in range(2)]
         results = await asyncio.gather(*tasks)
 
         created_emails = []
@@ -245,7 +242,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if created_emails:
             emails_formatted = "\n".join([f"🔹 `{e}`" for e in created_emails])
             msg_text = (
-                "📦 **নতুন ৫টি ইমেইল প্রস্তুত**\n"
+                "📦 **নতুন ২টি ইমেইল প্রস্তুত**\n"
                 "───────────────────\n"
                 f"{emails_formatted}\n"
                 "───────────────────\n"
@@ -280,8 +277,6 @@ async def health_check(request):
 
 async def main():
     global http_session
-    
-    # Initialize global reusable session
     http_session = aiohttp.ClientSession()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -303,7 +298,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    logging.info(f"Ultra-Fast Bot running on port {port}...")
+    logging.info(f"Bot running on port {port}...")
 
     try:
         await asyncio.Event().wait()
