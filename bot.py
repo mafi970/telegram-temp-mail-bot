@@ -48,9 +48,10 @@ def get_domain_inline_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 
-def get_check_inbox_inline_keyboard():
+def get_check_inbox_inline_keyboard(email):
+    """Generates an Inline Check Inbox button carrying the specific email address."""
     keyboard = [
-        [InlineKeyboardButton("🔄 Check Inbox", callback_data="inline_check_inbox")]
+        [InlineKeyboardButton("🔄 Check Inbox", callback_data=f"chk_inbox_{email}")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -73,7 +74,7 @@ def extract_smart_otp(subject, body):
 
 
 async def single_api_call():
-    """Ultra-fast single API query with increased timeout."""
+    """Ultra-fast single API query."""
     try:
         async with http_session.post(f"{API_BASE_URL}/new-email", timeout=aiohttp.ClientTimeout(total=8)) as response:
             if response.status in [200, 201]:
@@ -92,21 +93,17 @@ async def fetch_new_email(target_domain=None):
             res = await single_api_call() # Retry once
         return res
 
-    # Run 3 parallel requests to grab target domain super fast
     tasks = [single_api_call() for _ in range(3)]
     results = await asyncio.gather(*tasks)
 
-    # 1. Match selected domain
     for res in results:
         if res and res["email"].endswith(f"@{target_domain}"):
             return res
 
-    # 2. Fallback to any successfully returned email if specific domain didn't hit
     for res in results:
         if res:
             return res
 
-    # 3. Final safety retry
     return await single_api_call()
 
 
@@ -123,50 +120,38 @@ async def fetch_inbox(email, auth_key):
     return {"email": email, "emails": []}
 
 
-async def process_inbox_check(context):
+async def process_single_inbox_check(context, target_email):
+    """Checks inbox only for the requested specific email."""
     email_list = context.user_data.get("email_list", [])
 
-    if not email_list:
-        return "📂 প্রথমে একটি ইমেইল জেনারেট করুন।"
+    # Find the targeted email data from saved list
+    email_item = next((item for item in email_list if item["email"] == target_email), None)
 
-    # Check only the last 5 generated emails to prevent memory/timeout overhead
-    recent_emails = email_list[-5:]
-    tasks = [fetch_inbox(item["email"], item["auth_key"]) for item in recent_emails]
-    inbox_results = await asyncio.gather(*tasks)
+    if not email_item:
+        return f"❌ **`{target_email}`** ইমেইলটি বর্তমানে সক্রিয় তালিকায় নেই।"
 
-    total_messages_found = False
-    full_response_text = ""
+    res = await fetch_inbox(email_item["email"], email_item["auth_key"])
+    emails = res["emails"]
 
-    for res in inbox_results:
-        email = res["email"]
-        emails = res["emails"]
-
-        if emails:
-            total_messages_found = True
-            full_response_text += (
-                f"📬 **ইনবক্স:** `{email}`\n"
-                "━━━━━━━━━━━━━━━━━━━\n"
-            )
-            
-            for idx, mail in enumerate(emails, 1):
-                sender = mail.get("from", "অজানা")
+    if emails:
+        full_response_text = f"📬 **ইনবক্স:** `{target_email}`\n━━━━━━━━━━━━━━━━━━━\n"
+        for idx, mail in enumerate(emails, 1):
+            sender = mail.get("from", "অজানা")
                 subject = mail.get("subject", "বিষয় ছাড়া")
-                body = mail.get("textBody", "")
+            body = mail.get("textBody", "")
 
-                extracted_code = extract_smart_otp(subject, body)
+            extracted_code = extract_smart_otp(subject, body)
 
-                full_response_text += (
-                    f"📩 **মেসেজ #{idx}**\n"
-                    f"👤 **প্রাপক:** {sender}\n"
-                    f"📌 **বিষয়:** {subject}\n"
-                    f"🔑 **OTP Code:** {extracted_code}\n"
-                    "───────────────────\n\n"
-                )
-
-    if not total_messages_found:
-        return "📭 **কোনো নতুন মেসেজ পাওয়া যায়নি।**"
-    
-    return full_response_text
+            full_response_text += (
+                f"📩 **মেসেজ #{idx}**\n"
+                f"👤 **প্রাপক:** {sender}\n"
+                f"📌 **বিষয়:** {subject}\n"
+                f"🔑 **OTP Code:** {extracted_code}\n"
+                "───────────────────\n\n"
+            )
+        return full_response_text
+    else:
+        return f"📭 **`{target_email}`**\n\nকোনো নতুন মেসেজ পাওয়া যায়নি।"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -201,12 +186,13 @@ async def inline_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             parse_mode="Markdown"
         )
 
-    elif data == "inline_check_inbox":
-        msg_text = await process_inbox_check(context)
+    elif data.startswith("chk_inbox_"):
+        target_email = data.replace("chk_inbox_", "")
+        msg_text = await process_single_inbox_check(context, target_email)
         await query.message.reply_text(
             msg_text, 
             parse_mode="Markdown", 
-            reply_markup=get_check_inbox_inline_keyboard()
+            reply_markup=get_check_inbox_inline_keyboard(target_email)
         )
 
 
@@ -238,7 +224,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 msg_text, 
                 parse_mode="Markdown", 
-                reply_markup=get_check_inbox_inline_keyboard()
+                reply_markup=get_check_inbox_inline_keyboard(email_data['email'])
             )
         else:
             await update.message.reply_text("❌ ইমেইল তৈরি করতে সমস্যা হয়েছে। দয়া করে আবার চেষ্টা করুন।")
@@ -247,28 +233,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tasks = [fetch_new_email(target_domain=selected_domain) for _ in range(2)]
         results = await asyncio.gather(*tasks)
 
-        created_emails = []
         for email_data in results:
             if email_data:
                 context.user_data["email_list"].append(email_data)
-                created_emails.append(email_data["email"])
-
-        if created_emails:
-            emails_formatted = "\n".join([f"🔹 `{e}`" for e in created_emails])
-            msg_text = (
-                "📦 **নতুন ২টি ইমেইল প্রস্তুত**\n"
-                "───────────────────\n"
-                f"{emails_formatted}\n"
-                "───────────────────\n"
-                "💡 *কপি করতে ইমেইলের ওপর ট্যাপ করুন।*"
-            )
-            await update.message.reply_text(
-                msg_text, 
-                parse_mode="Markdown", 
-                reply_markup=get_check_inbox_inline_keyboard()
-            )
-        else:
-            await update.message.reply_text("❌ ইমেইল তৈরি করতে সমস্যা হয়েছে। আবার চেষ্টা করুন।")
+                msg_text = (
+                    "🎯 **নতুন ইমেইল প্রস্তুত**\n"
+                    "───────────────────\n"
+                    f"📧 `{email_data['email']}`\n"
+                    "───────────────────\n"
+                    "💡 *কপি করতে ইমেইলের ওপর ট্যাপ করুন।*"
+                )
+                await update.message.reply_text(
+                    msg_text, 
+                    parse_mode="Markdown", 
+                    reply_markup=get_check_inbox_inline_keyboard(email_data['email'])
+                )
 
     elif text == "📋 আমার ইমেইলসমূহ":
         email_list = context.user_data.get("email_list", [])
@@ -278,7 +257,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg_text = f"📋 **সক্রিয় ইমেইল তালিকা** ({len(email_list)}টি)\n"
         msg_text += "───────────────────\n"
-        for idx, item in enumerate(email_list[-10:], 1):  # Show last 10
+        for idx, item in enumerate(email_list[-10:], 1):
             msg_text += f"{idx}. `{item['email']}`\n"
         msg_text += "───────────────────"
 
@@ -291,7 +270,6 @@ async def health_check(request):
 
 async def main():
     global http_session
-    # Increase connection pool limit for high speed and parallel traffic
     conn = aiohttp.TCPConnector(limit=100, ttl_dns_cache=300)
     http_session = aiohttp.ClientSession(connector=conn)
 
