@@ -26,7 +26,7 @@ if not BOT_TOKEN:
 
 API_BASE_URL = "https://api.tempmail.fish/emails"
 
-# Global Persistent HTTP Session for Maximum Speed
+# Global Persistent HTTP Session
 http_session: aiohttp.ClientSession = None
 
 
@@ -72,36 +72,49 @@ def extract_smart_otp(subject, body):
     return "পাওয়া যায়নি"
 
 
-async def fetch_single_api_email():
-    """Helper to perform a fast single API call with reduced timeout."""
+async def single_api_call():
+    """Ultra-fast single API query with increased timeout."""
     try:
-        async with http_session.post(f"{API_BASE_URL}/new-email", timeout=aiohttp.ClientTimeout(total=4)) as response:
+        async with http_session.post(f"{API_BASE_URL}/new-email", timeout=aiohttp.ClientTimeout(total=8)) as response:
             if response.status in [200, 201]:
                 data = await response.json()
                 return {"email": data.get("email"), "auth_key": data.get("authKey")}
     except Exception as e:
-        logging.error(f"API Fetch Error: {e}")
+        logging.error(f"API Call Failed: {e}")
     return None
 
 
-async def fetch_new_email(target_domain=None, max_attempts=6):
-    """Ultra-fast concurrent attempt for target domain."""
+async def fetch_new_email(target_domain=None):
+    """Parallel domain fetching for instantaneous response."""
     if not target_domain or target_domain == "any":
-        return await fetch_single_api_email()
+        res = await single_api_call()
+        if not res:
+            res = await single_api_call() # Retry once
+        return res
 
-    for _ in range(max_attempts):
-        res = await fetch_single_api_email()
+    # Run 3 parallel requests to grab target domain super fast
+    tasks = [single_api_call() for _ in range(3)]
+    results = await asyncio.gather(*tasks)
+
+    # 1. Match selected domain
+    for res in results:
         if res and res["email"].endswith(f"@{target_domain}"):
             return res
 
-    return await fetch_single_api_email()
+    # 2. Fallback to any successfully returned email if specific domain didn't hit
+    for res in results:
+        if res:
+            return res
+
+    # 3. Final safety retry
+    return await single_api_call()
 
 
 async def fetch_inbox(email, auth_key):
     headers = {"Authorization": auth_key}
     params = {"emailAddress": email}
     try:
-        async with http_session.get(f"{API_BASE_URL}/emails", headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=4)) as response:
+        async with http_session.get(f"{API_BASE_URL}/emails", headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=8)) as response:
             if response.status == 200:
                 emails = await response.json()
                 return {"email": email, "emails": emails}
@@ -116,7 +129,9 @@ async def process_inbox_check(context):
     if not email_list:
         return "📂 প্রথমে একটি ইমেইল জেনারেট করুন।"
 
-    tasks = [fetch_inbox(item["email"], item["auth_key"]) for item in email_list]
+    # Check only the last 5 generated emails to prevent memory/timeout overhead
+    recent_emails = email_list[-5:]
+    tasks = [fetch_inbox(item["email"], item["auth_key"]) for item in recent_emails]
     inbox_results = await asyncio.gather(*tasks)
 
     total_messages_found = False
@@ -226,10 +241,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_check_inbox_inline_keyboard()
             )
         else:
-            await update.message.reply_text("❌ সার্ভার ব্যস্ত আছে। অনুগ্রহ করে কয়েক সেকেন্ড পর আবার চেষ্টা করুন।")
+            await update.message.reply_text("❌ ইমেইল তৈরি করতে সমস্যা হয়েছে। দয়া করে আবার চেষ্টা করুন।")
 
     elif text == "📦 ২টি ইমেইল":
-        # Run 2 requests concurrently for extreme speed
         tasks = [fetch_new_email(target_domain=selected_domain) for _ in range(2)]
         results = await asyncio.gather(*tasks)
 
@@ -264,7 +278,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg_text = f"📋 **সক্রিয় ইমেইল তালিকা** ({len(email_list)}টি)\n"
         msg_text += "───────────────────\n"
-        for idx, item in enumerate(email_list, 1):
+        for idx, item in enumerate(email_list[-10:], 1):  # Show last 10
             msg_text += f"{idx}. `{item['email']}`\n"
         msg_text += "───────────────────"
 
@@ -277,7 +291,9 @@ async def health_check(request):
 
 async def main():
     global http_session
-    http_session = aiohttp.ClientSession()
+    # Increase connection pool limit for high speed and parallel traffic
+    conn = aiohttp.TCPConnector(limit=100, ttl_dns_cache=300)
+    http_session = aiohttp.ClientSession(connector=conn)
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -298,7 +314,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    logging.info(f"Bot running on port {port}...")
+    logging.info(f"Ultra-Fast Bot active on port {port}...")
 
     try:
         await asyncio.Event().wait()
